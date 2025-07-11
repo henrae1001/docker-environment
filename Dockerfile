@@ -96,7 +96,7 @@ RUN cd /tmp/verilator && \
 RUN verilator --version
 
 # Stage 4: systemc_provider
-FROM verilator_provider AS systemc_provider
+FROM common_pkg_provider AS systemc_provider
 USER root
 
 # Install SystemC build dependencies
@@ -107,23 +107,30 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory to /tmp and install SystemC
+# Download and extract SystemC
 RUN cd /tmp && \
     wget https://github.com/accellera-official/systemc/archive/refs/tags/2.3.4.tar.gz -O systemc-2.3.4.tar.gz && \
     tar -xzf systemc-2.3.4.tar.gz && \
-    cd systemc-2.3.4 && \
+    cd systemc-2.3.4
+
+# Configure SystemC
+RUN cd /tmp/systemc-2.3.4 && \
     autoreconf -i && \
     mkdir build && cd build && \
-    ../configure --prefix=/opt/systemc && \
-    make -j$(nproc) && make install && \
+    ../configure --prefix=/opt/systemc
+
+# Build and install SystemC
+RUN cd /tmp/systemc-2.3.4/build && \
+    make -j$(nproc) && \
+    make install && \
     rm -rf /tmp/systemc-2.3.4*
 
-# Set environment variables for SystemC
-ENV SYSTEMC_HOME=/opt/systemc
-ENV PATH=$SYSTEMC_HOME/bin:$PATH
-ENV LD_LIBRARY_PATH=/opt/systemc/lib-linux
-ENV SYSTEMC_CXXFLAGS=-I$SYSTEMC_HOME/include
-ENV SYSTEMC_LDFLAGS="-L$SYSTEMC_HOME/lib-linux -lsystemc"
+# Verify SystemC installation
+RUN ls -l /opt/systemc/lib* && \
+    test -f /opt/systemc/lib/libsystemc.so || \
+    test -f /opt/systemc/lib-linux64/libsystemc.so || \
+    test -f /opt/systemc/lib-linux/libsystemc.so || \
+    { echo "Error: libsystemc.so not found in expected directories"; exit 1; }
 
 # Stage 5: last
 FROM base AS last
@@ -147,16 +154,6 @@ RUN apt-get update && apt-get install -y \
 COPY --from=common_pkg_provider --chown=user:user /opt/conda /opt/conda
 ENV PATH=/opt/conda/bin:$PATH
 
-COPY --from=common_pkg_provider /usr/bin/python3 /usr/bin/python3
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/pip3 /usr/bin/pip3
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/vim /usr/bin/vim
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/git /usr/bin/git
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/curl /usr/bin/curl
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/wget /usr/bin/wget
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/make /usr/bin/make
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/gcc /usr/bin/gcc
-COPY --from=common_pkg_provider --chown=user:user /usr/bin/g++ /usr/bin/g++
-
 # Copy from verilator_provider with chown
 COPY --from=verilator_provider --chown=user:user /usr/local/bin/verilator /usr/local/bin/verilator
 COPY --from=verilator_provider --chown=user:user /usr/local/share/verilator /usr/local/share/verilator
@@ -164,16 +161,33 @@ COPY --from=verilator_provider --chown=user:user /usr/local/share/verilator /usr
 # Copy from systemc_provider with chown
 COPY --from=systemc_provider --chown=user:user /opt/systemc /opt/systemc
 
-# Set environment variables for SystemC
+# Set environment variables for SystemC (dynamically detect library path)
+RUN mkdir -p /etc/profile.d && \
+    if [ -d /opt/systemc/lib-linux64 ]; then \
+        echo "export LD_LIBRARY_PATH=/opt/systemc/lib-linux64:\$LD_LIBRARY_PATH" >> /etc/profile.d/systemc.sh && \
+        echo "export SYSTEMC_LDFLAGS=\"-L/opt/systemc/lib-linux64 -lsystemc\"" >> /etc/profile.d/systemc.sh; \
+    elif [ -d /opt/systemc/lib-linux ]; then \
+        echo "export LD_LIBRARY_PATH=/opt/systemc/lib-linux:\$LD_LIBRARY_PATH" >> /etc/profile.d/systemc.sh && \
+        echo "export SYSTEMC_LDFLAGS=\"-L/opt/systemc/lib-linux -lsystemc\"" >> /etc/profile.d/systemc.sh; \
+    elif [ -d /opt/systemc/lib ]; then \
+        echo "export LD_LIBRARY_PATH=/opt/systemc/lib:\$LD_LIBRARY_PATH" >> /etc/profile.d/systemc.sh && \
+        echo "export SYSTEMC_LDFLAGS=\"-L/opt/systemc/lib -lsystemc\"" >> /etc/profile.d/systemc.sh; \
+    else \
+        echo "Error: No SystemC library directory found"; exit 1; \
+    fi
 ENV SYSTEMC_HOME=/opt/systemc
 ENV PATH=$SYSTEMC_HOME/bin:$PATH
-ENV LD_LIBRARY_PATH=/opt/systemc/lib-linux
 ENV SYSTEMC_CXXFLAGS=-I$SYSTEMC_HOME/include
-ENV SYSTEMC_LDFLAGS="-L$SYSTEMC_HOME/lib-linux -lsystemc"
+
+# Verify environment variables
+RUN bash -c "source /etc/profile.d/systemc.sh && echo \$LD_LIBRARY_PATH && echo \$SYSTEMC_LDFLAGS"
 
 # Set working directory and switch to non-root user
 USER user
 WORKDIR /home/user
 
+# Source the environment variables for non-root user
+RUN echo "source /etc/profile.d/systemc.sh" >> /home/user/.bashrc
+
 # Default command
-CMD ["/bin/bash"]
+CMD ["/bin/bash", "-l"]
