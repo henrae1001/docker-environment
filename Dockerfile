@@ -1,12 +1,14 @@
-# Stage 1: base
+# Stage 1: base image with Ubuntu 24.04 and environment settings
 FROM ubuntu:24.04 AS base
 
+# Set non-interactive environment for apt
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Taipei
 
+# Set timezone to Asia/Taipei
+ENV TZ=Asia/Taipei
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Install tzdata and clean up
+# Install tzdata and other essential tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     && apt-get clean \
@@ -20,13 +22,6 @@ RUN groupadd --gid $GID $USERNAME \
     && useradd --uid $UID --gid $GID --create-home --shell /bin/bash $USERNAME \
     && usermod -aG sudo $USERNAME \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# Set working directory and switch to non-root user
-USER $USERNAME
-WORKDIR /home/$USERNAME
-
-# Default command
-CMD ["/bin/bash"]
 
 # Stage 2: common_pkg_provider
 FROM base AS common_pkg_provider
@@ -119,7 +114,7 @@ RUN cd /tmp/systemc-2.3.4 && \
     mkdir build && cd build && \
     ../configure --prefix=/opt/systemc
 
-# Build and install SystemC
+# Build and install SystemC 2.3.4
 RUN cd /tmp/systemc-2.3.4/build && \
     make -j$(nproc) && \
     make install && \
@@ -175,6 +170,8 @@ RUN mkdir -p /etc/profile.d && \
     else \
         echo "Error: No SystemC library directory found"; exit 1; \
     fi
+
+# Set additional environment variables for SystemC
 ENV SYSTEMC_HOME=/opt/systemc
 ENV PATH=$SYSTEMC_HOME/bin:$PATH
 ENV SYSTEMC_CXXFLAGS=-I$SYSTEMC_HOME/include
