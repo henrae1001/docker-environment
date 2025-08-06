@@ -23,6 +23,7 @@ IMAGE_NAME=""
 CONT_NAME=""
 CONTAINER_NAME=""
 MOUNTS=()
+
 # Check if command is provided
 if [ $# -lt 1 ]; then
     usage_message

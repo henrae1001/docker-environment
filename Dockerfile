@@ -35,7 +35,14 @@ ENV PATH=/opt/conda/bin:$PATH
 FROM ubuntu:24.04 AS common_pkg_provider
 USER root
 
+# User account configuration
+RUN mkdir -p /home/"${USERNAME}"/.ssh && \
+    mkdir -p /home/"${USERNAME}"/.vscode-server && \
+    mkdir -p /home/"${USERNAME}"/projects
+RUN chown -R ${UID}:${GID} /home/"${USERNAME}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    sudo \
     vim \
     git \
     curl \
@@ -77,21 +84,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Clone and checkout Verilator source
 RUN git clone https://github.com/verilator/verilator.git /tmp/verilator && \
     cd /tmp/verilator && \
-    git checkout v5.024
-
-# Configure Verilator
-RUN cd /tmp/verilator && \
     autoconf && \
-    ./configure
-
-# Build and install Verilator
-RUN cd /tmp/verilator && \
+    ./configure --prefix=/usr/local/verilator && \
     make -j$(nproc) && \
     make install && \
     rm -rf /tmp/verilator
-
-# Verify Verilator installation
-RUN verilator --version
 
 # Stage 4: systemc_provider
 FROM ubuntu:24.04 AS systemc_provider
@@ -170,15 +167,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy from conda_provider with chown
-COPY --from=conda_provider --chown=${USERNAME}:${USERNAME} /opt/conda /opt/conda
-ENV PATH=/opt/conda/bin:$PATH
+COPY --from=conda_provider /opt/conda /opt/conda
+RUN chown -R ${UID}:${GID} /opt/conda
+ENV PATH=/opt/conda/condabin:${PATH}
 
-# Copy from verilator_provider with chown
-COPY --from=verilator_provider --chown=${USERNAME}:${USERNAME} /usr/local/bin/verilator /usr/local/bin/verilator
-COPY --from=verilator_provider --chown=${USERNAME}:${USERNAME} /usr/local/share/verilator /usr/local/share/verilator
+# Copy Verilator from the build stage and set environment variables
+COPY --from=verilator_provider /usr/local/verilator /usr/local/verilator
+ENV PATH="/usr/local/verilator/bin:${PATH}"
 
 # Copy from systemc_provider with chown
-COPY --from=systemc_provider --chown=${USERNAME}:${USERNAME} /opt/systemc /opt/systemc
+COPY --from=systemc_provider /opt/systemc /opt/systemc
 
 # Set environment variables for SystemC (dynamically detect library path)
 RUN mkdir -p /etc/profile.d && \
@@ -203,9 +201,17 @@ ENV SYSTEMC_CXXFLAGS=-I$SYSTEMC_HOME:/include
 # Verify environment variables
 RUN bash -c "source /etc/profile.d/systemc.sh && echo \$LD_LIBRARY_PATH && echo \$SYSTEMC_LDFLAGS"
 
+# Copy the eman script to the container
+COPY ./script/eman.sh /usr/local/bin/eman
+
+RUN apt-get update && apt-get install -y dos2unix && dos2unix /usr/local/bin/eman && apt-get clean
+RUN chmod +x /usr/local/bin/eman
+# Make sure the eman script can be executed by the user
+ENV PATH="/usr/local/bin:${PATH}"
+
 # Set working directory and switch to non-root user
 USER ${USERNAME}
-WORKDIR /home/${USERNAME}
+WORKDIR /home/"${USERNAME}"
 
 # Source the environment variables for non-root user
 RUN echo "source /etc/profile.d/systemc.sh" >> /home/${USERNAME}/.bashrc
